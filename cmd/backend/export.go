@@ -113,6 +113,17 @@ func UndoScanMulti() *C.char {
 	return returnJSON(results)
 }
 
+// KeepOnlyMulti drops the types that are not in typesMask (one bit per type
+// number); null when none of the given types has results.
+//
+//export KeepOnlyMulti
+func KeepOnlyMulti(typesMask C.int) *C.char {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	results := app.KeepOnlyMulti(uint(typesMask))
+	return returnJSON(results)
+}
+
 // ChangeValuesMulti writes value over the results of one type (a type number).
 //
 //export ChangeValuesMulti

@@ -31,13 +31,23 @@ var (
 	ErrTooManyResults = errors.New("memscan: too many results to read at once")
 )
 
-// undoState lets UndoScan put back what the last NextScan changed.
+// undoState lets UndoScan put back what the last NextScan (or KeepOnly) changed.
 type undoState struct {
-	// status of every type before the scan
+	// status of every type before the change
 	status map[scanner.Type]TypeStatus
 	// types on which Memscan.NextScan ran (and can be undone). The other
 	// types were left untouched, whatever status they got.
 	ran []scanner.Type
+	// true when a NextScan started this state: it counted as a round
+	scan bool
+}
+
+func (s *Session) snapshotStatus() map[scanner.Type]TypeStatus {
+	snapshot := make(map[scanner.Type]TypeStatus, len(s.status))
+	for typ, status := range s.status {
+		snapshot[typ] = status
+	}
+	return snapshot
 }
 
 // Rounds is the number of scans done so far (the first scan is round 1).
@@ -103,10 +113,7 @@ func (s *Session) NextScan(values []*scanner.Value) (time.Duration, error) {
 	// the previous undo window closes: free what only it was keeping
 	s.forgetInactive()
 
-	undo := &undoState{status: make(map[scanner.Type]TypeStatus, len(s.status))}
-	for typ, status := range s.status {
-		undo.status[typ] = status
-	}
+	undo := &undoState{status: s.snapshotStatus(), scan: true}
 
 	st := time.Now()
 	var wg sync.WaitGroup
@@ -159,11 +166,51 @@ func (s *Session) UndoScan() bool {
 		}
 	}
 	s.status = s.undo.status
-	s.undo = nil
-	if s.round > 1 {
+	if s.undo.scan && s.round > 1 {
 		s.round--
 	}
+	s.undo = nil
 	return true
+}
+
+// KeepOnly drops every active type that is not in types: it is what you do
+// once you know which type holds the value. The dropped types are given up for
+// good when the next scan starts, until then UndoScan brings them back.
+//
+// Undo goes back to before the last NextScan when there was one, otherwise
+// only the types come back. Nothing happens, and nothing can be undone, when
+// no active type would be dropped. At least one of types must be active.
+func (s *Session) KeepOnly(types []scanner.Type) error {
+	if s.proc == nil {
+		return ErrSessionNotOpen
+	}
+	keep := make(map[scanner.Type]bool, len(types))
+	for _, typ := range types {
+		keep[typ] = true
+	}
+	var kept, dropped []scanner.Type
+	for _, typ := range s.activeTypes() {
+		if keep[typ] {
+			kept = append(kept, typ)
+		} else {
+			dropped = append(dropped, typ)
+		}
+	}
+	if len(kept) == 0 {
+		return ErrTypeNotActive
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+
+	// a state left by a NextScan stays: undoing it brings everything back
+	if s.undo == nil {
+		s.undo = &undoState{status: s.snapshotStatus()}
+	}
+	for _, typ := range dropped {
+		s.status[typ] = StatusDropped
+	}
+	return nil
 }
 
 // forgetInactive frees the results of the types a previous scan dropped or

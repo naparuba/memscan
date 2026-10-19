@@ -168,6 +168,25 @@ func (app *App) UndoScanMulti() *MultiResults {
 	return nil
 }
 
+// KeepOnlyMulti drops the types that are not in typesMask (one bit per type
+// number) once the user knows which one holds the value. At least one of the
+// types must still have results. UndoScanMulti brings the others back.
+func (app *App) KeepOnlyMulti(typesMask uint) *MultiResults {
+	if app.game == nil || app.values == nil {
+		return nil
+	}
+	var types []scanner.Type
+	for typ := scanner.Int8; typ <= scanner.Float64; typ++ {
+		if typesMask&typesBit(typ) != 0 {
+			types = append(types, typ)
+		}
+	}
+	if err := app.session.KeepOnly(types); err != nil {
+		return nil
+	}
+	return app.render(0)
+}
+
 // ChangeValuesMulti writes the value over the results of one type designated
 // by their position in the list (all of them when indexes is empty).
 func (app *App) ChangeValuesMulti(typ scanner.Type, value string, indexes []int) *MultiResults {

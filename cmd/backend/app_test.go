@@ -263,6 +263,50 @@ func TestMultiScansNarrowDownThenUndo(t *testing.T) {
 	}
 }
 
+func TestKeepOnlyMulti(t *testing.T) {
+	a := newTestApp(t)
+	mem := newArea(t, 40*4096)
+	number := randomNumber()
+	plantEverywhere(t, mem, number, 10)
+
+	if a.KeepOnlyMulti(typesBit(scanner.Int32)) != nil {
+		t.Fatal("KeepOnlyMulti before any scan must give nothing")
+	}
+	a.FirstScanMulti(testAppID, number, scanner.OptionFloatUnrounded, false, 0) // Int32 Int64 Float32 Float64
+
+	results := a.KeepOnlyMulti(typesBit(scanner.Float32) | typesBit(scanner.Int32) | typesBit(scanner.Int8))
+	if results == nil {
+		t.Fatal("KeepOnlyMulti failed")
+	}
+	got := byName(results)
+	for name, want := range map[string]string{"Int32": "ok", "Float32": "ok", "Int64": "dropped", "Float64": "dropped"} {
+		if got[name].Status != want {
+			t.Errorf("%s: status %q, want %q", name, got[name].Status, want)
+		}
+	}
+	if got["Int64"].List != nil {
+		t.Error("a dropped type must not be listed")
+	}
+	if results.Round != 1 || !results.CanUndo {
+		t.Errorf("round %d, canUndo %v", results.Round, results.CanUndo)
+	}
+
+	// none of the requested types has results: nothing changes
+	if a.KeepOnlyMulti(typesBit(scanner.Int8)|typesBit(scanner.Int64)) != nil {
+		t.Error("keeping only dropped or absent types must give nothing")
+	}
+
+	results = a.UndoScanMulti()
+	if results == nil {
+		t.Fatal("nothing to undo")
+	}
+	for _, tr := range results.Types {
+		if tr.Status != "ok" {
+			t.Errorf("%s: status %q after undo", tr.Name, tr.Status)
+		}
+	}
+}
+
 func TestChangeValuesMultiWritesOneType(t *testing.T) {
 	a := newTestApp(t)
 	mem := newArea(t, 40*4096)

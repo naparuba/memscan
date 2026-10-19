@@ -172,6 +172,199 @@ func TestSessionNextScanPrunesEmptyTypes(t *testing.T) {
 	}
 }
 
+func TestSessionKeepOnly(t *testing.T) {
+	setup := func(t *testing.T) (*Session, *plantedArea, map[scanner.Type][]uint64, []*scanner.Value) {
+		area := newPlantedArea(t, 100*4096)
+		x := scanner.NewInt32(randomInt32())
+		b := scanner.NewInt64(randomInt64())
+		f := scanner.NewFloat32(float32(1000000 + rand.Intn(1<<20)))
+		values := []*scanner.Value{x, b, f}
+		planted := map[scanner.Type][]uint64{
+			scanner.Int32:   area.plant(x, slots(30, 0)...),
+			scanner.Int64:   area.plant(b, slots(30, 1)...),
+			scanner.Float32: area.plant(f, slots(30, 2)...),
+		}
+		s, _ := newSelfSession(t)
+		mustFirstScan(t, s, values...)
+		return s, area, planted, values
+	}
+
+	t.Run("drops the other types and undo brings them back", func(t *testing.T) {
+		s, area, planted, _ := setup(t)
+		counts := map[scanner.Type]int{}
+		for _, info := range s.Infos() {
+			counts[info.Type] = info.Count
+		}
+		if s.CanUndo() {
+			t.Fatal("nothing to undo after the first scan")
+		}
+
+		if err := s.KeepOnly([]scanner.Type{scanner.Int32}); err != nil {
+			t.Fatal(err)
+		}
+		requireStatus(t, s, scanner.Int32, StatusOK)
+		requireStatus(t, s, scanner.Int64, StatusDropped)
+		requireStatus(t, s, scanner.Float32, StatusDropped)
+		if s.Rounds() != 1 || !s.CanUndo() {
+			t.Fatalf("round %d, canUndo %v: KeepOnly is not a scan, but it can be undone", s.Rounds(), s.CanUndo())
+		}
+
+		if !s.UndoScan() {
+			t.Fatal("nothing to undo")
+		}
+		if s.Rounds() != 1 || s.CanUndo() {
+			t.Fatalf("after undo: round %d, canUndo %v", s.Rounds(), s.CanUndo())
+		}
+		for _, info := range s.Infos() {
+			if info.Status != StatusOK || info.Count != counts[info.Type] {
+				t.Fatalf("%v after undo: %+v, had %d results", info.Type, info, counts[info.Type])
+			}
+		}
+		if got := area.hits(s, scanner.Float32); !reflect.DeepEqual(got, planted[scanner.Float32]) {
+			t.Fatalf("Float32 after undo: %d hits, want %d", len(got), len(planted[scanner.Float32]))
+		}
+	})
+
+	t.Run("several types can be kept", func(t *testing.T) {
+		s, _, _, _ := setup(t)
+		if err := s.KeepOnly([]scanner.Type{scanner.Int64, scanner.Float32}); err != nil {
+			t.Fatal(err)
+		}
+		requireStatus(t, s, scanner.Int32, StatusDropped)
+		requireStatus(t, s, scanner.Int64, StatusOK)
+		requireStatus(t, s, scanner.Float32, StatusOK)
+	})
+
+	t.Run("refuses to drop everything, ignores types that are not active", func(t *testing.T) {
+		s, _, _, _ := setup(t)
+		for _, types := range [][]scanner.Type{nil, {scanner.Int8}, {scanner.Int16, scanner.Float64}} {
+			if err := s.KeepOnly(types); !errors.Is(err, ErrTypeNotActive) {
+				t.Fatalf("KeepOnly(%v): %v", types, err)
+			}
+		}
+		if s.CanUndo() {
+			t.Fatal("a refused request must change nothing")
+		}
+		for _, info := range s.Infos() {
+			if info.Status != StatusOK {
+				t.Fatalf("%v: status %v", info.Type, info.Status)
+			}
+		}
+
+		// keeping every active type drops nothing: no undo state either
+		if err := s.KeepOnly([]scanner.Type{scanner.Int32, scanner.Int64, scanner.Float32, scanner.Int8}); err != nil {
+			t.Fatal(err)
+		}
+		if s.CanUndo() {
+			t.Fatal("nothing was dropped, nothing to undo")
+		}
+	})
+
+	t.Run("two calls are undone together", func(t *testing.T) {
+		s, _, _, _ := setup(t)
+		if err := s.KeepOnly([]scanner.Type{scanner.Int32, scanner.Int64}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.KeepOnly([]scanner.Type{scanner.Int32}); err != nil {
+			t.Fatal(err)
+		}
+		if !s.UndoScan() {
+			t.Fatal("nothing to undo")
+		}
+		for _, typ := range []scanner.Type{scanner.Int32, scanner.Int64, scanner.Float32} {
+			requireStatus(t, s, typ, StatusOK)
+		}
+	})
+
+	t.Run("undoing a KeepOnly keeps the round", func(t *testing.T) {
+		s, _, _, values := setup(t)
+		mustNextScan(t, s, values...)
+		mustNextScan(t, s, values...)
+		if !s.UndoScan() || s.Rounds() != 2 || s.CanUndo() {
+			t.Fatalf("round %d, canUndo %v: want round 2 with nothing left to undo", s.Rounds(), s.CanUndo())
+		}
+		if err := s.KeepOnly([]scanner.Type{scanner.Int32}); err != nil {
+			t.Fatal(err)
+		}
+		if !s.UndoScan() {
+			t.Fatal("nothing to undo")
+		}
+		if s.Rounds() != 2 {
+			t.Fatalf("round %d after undoing a KeepOnly, want 2: it is not a scan", s.Rounds())
+		}
+		for _, typ := range []scanner.Type{scanner.Int32, scanner.Int64, scanner.Float32} {
+			requireStatus(t, s, typ, StatusOK)
+		}
+	})
+
+	t.Run("undo after a next scan goes back before the scan", func(t *testing.T) {
+		s, area, planted, values := setup(t)
+		x2 := scanner.NewInt32(randomInt32())
+		b2 := scanner.NewInt64(randomInt64())
+		area.plant(x2, slots(30, 0)...)
+		area.plant(b2, slots(30, 1)...)
+
+		mustNextScan(t, s, x2, b2)
+		if s.Rounds() != 2 {
+			t.Fatalf("round %d", s.Rounds())
+		}
+		if err := s.KeepOnly([]scanner.Type{scanner.Int32}); err != nil {
+			t.Fatal(err)
+		}
+		requireStatus(t, s, scanner.Int64, StatusDropped)
+		if s.Rounds() != 2 {
+			t.Fatalf("KeepOnly changed the round: %d", s.Rounds())
+		}
+
+		if !s.UndoScan() {
+			t.Fatal("nothing to undo")
+		}
+		if s.Rounds() != 1 {
+			t.Fatalf("round %d after undo, want 1", s.Rounds())
+		}
+		for _, v := range values {
+			requireStatus(t, s, v.Type(), StatusOK)
+		}
+		if got := area.hits(s, scanner.Int64); !reflect.DeepEqual(got, planted[scanner.Int64]) {
+			t.Fatalf("Int64 after undo: %d hits, want %d", len(got), len(planted[scanner.Int64]))
+		}
+	})
+
+	t.Run("the next scan only refines the kept types and frees the others", func(t *testing.T) {
+		s, _, planted, values := setup(t)
+		if err := s.KeepOnly([]scanner.Type{scanner.Int32}); err != nil {
+			t.Fatal(err)
+		}
+		// the Int64 value is given too: its type is not active, it is ignored
+		mustNextScan(t, s, values[0], values[1])
+		requireStatus(t, s, scanner.Int32, StatusOK)
+		requireStatus(t, s, scanner.Int64, StatusDropped)
+		if n := s.Scan(scanner.Int64).Count(); n != 0 {
+			t.Fatalf("a dropped type still holds %d results after the next scan", n)
+		}
+		if s.Rounds() != 2 {
+			t.Fatalf("round %d", s.Rounds())
+		}
+		if len(planted) == 0 {
+			t.Fatal("no planted values")
+		}
+
+		// undo reverts the scan only: the types dropped before it stay dropped
+		if !s.UndoScan() {
+			t.Fatal("nothing to undo")
+		}
+		requireStatus(t, s, scanner.Int32, StatusOK)
+		requireStatus(t, s, scanner.Int64, StatusDropped)
+		requireStatus(t, s, scanner.Float32, StatusDropped)
+	})
+
+	t.Run("needs an open session", func(t *testing.T) {
+		if err := NewSession().KeepOnly([]scanner.Type{scanner.Int32}); !errors.Is(err, ErrSessionNotOpen) {
+			t.Fatalf("closed session: %v", err)
+		}
+	})
+}
+
 func TestSessionStartingANewScanClosesTheUndoWindow(t *testing.T) {
 	area := newPlantedArea(t, 100*4096)
 	x, b := scanner.NewInt32(0x6F1E9A3C), scanner.NewInt64(0x1D2C3B4A5F607182)
