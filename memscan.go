@@ -40,12 +40,18 @@ const (
 )
 
 func NewMemscan() *Memscan {
-	results, err := NewMmapUint64(resultsAllocCaps)
+	return newMemscanCaps(resultsAllocCaps)
+}
+
+// newMemscanCaps creates a Memscan whose result buffers start with caps
+// entries; they grow on demand when results are merged (see MmapUint64.Merge).
+func newMemscanCaps(caps int) *Memscan {
+	results, err := NewMmapUint64(caps)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 	}
 
-	lastResults, err := NewMmapUint64(resultsAllocCaps)
+	lastResults, err := NewMmapUint64(caps)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 	}
