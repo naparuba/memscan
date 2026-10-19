@@ -134,9 +134,10 @@ type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// overridable for tests: pausing the process we run in would freeze it
-	pause  func() error
-	resume func() error
+	// how the process is paused, see SetPauseFuncs
+	pause       func() error
+	resume      func() error
+	customPause bool
 }
 
 func NewSession() *Session {
@@ -157,9 +158,19 @@ func (s *Session) Open(proc *deck.Process) error {
 	}
 	s.proc = proc
 	s.maps = maps
-	s.pause = proc.Pause
-	s.resume = proc.Resume
+	if !s.customPause {
+		s.pause = proc.Pause
+		s.resume = proc.Resume
+	}
 	return nil
+}
+
+// SetPauseFuncs replaces how the process is paused during a first scan
+// (SIGSTOP / SIGCONT by default), for good: Open keeps it. It exists for tests
+// and for programs that scan their own process, which must not freeze it.
+func (s *Session) SetPauseFuncs(pause, resume func() error) {
+	s.pause, s.resume = pause, resume
+	s.customPause = true
 }
 
 func (s *Session) Close() (err error) {
