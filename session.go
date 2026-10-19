@@ -82,7 +82,16 @@ const (
 	StatusParked
 	// StatusTruncated: more results than the limits allow, they were dropped
 	StatusTruncated
+	// StatusEmpty: the last scan left no result for this type
+	StatusEmpty
+	// StatusDropped: the value of the last scan cannot be expressed in this type
+	StatusDropped
 )
+
+// Active tells whether the type still has results that can be refined.
+func (s TypeStatus) Active() bool {
+	return s == StatusOK || s == StatusParked
+}
 
 func (s TypeStatus) String() string {
 	switch s {
@@ -92,6 +101,10 @@ func (s TypeStatus) String() string {
 		return "parked"
 	case StatusTruncated:
 		return "truncated"
+	case StatusEmpty:
+		return "empty"
+	case StatusDropped:
+		return "dropped"
 	}
 	return "unknown"
 }
@@ -113,6 +126,8 @@ type Session struct {
 
 	scans  map[scanner.Type]*Memscan
 	status map[scanner.Type]TypeStatus
+	round  uint
+	undo   *undoState
 
 	limits ResultLimits
 	sem    *semaphore.Weighted
@@ -172,6 +187,17 @@ func (s *Session) Reset() {
 	}
 	s.scans = make(map[scanner.Type]*Memscan)
 	s.status = make(map[scanner.Type]TypeStatus)
+	s.round = 0
+	s.undo = nil
+}
+
+// renewContext gives the session, and all its scans, a fresh context after a
+// Cancel, so that the next scan is not aborted at once.
+func (s *Session) renewContext() {
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	for _, m := range s.scans {
+		m.ctx, m.cancel = s.ctx, s.cancel
+	}
 }
 
 // Scan returns the single-type scan holding the results of typ, nil if typ was
@@ -325,6 +351,8 @@ func (s *Session) FirstScan(values []*scanner.Value, emulatorMode bool) (time.Du
 		m := newMemscanCaps(sessionInitialResultsCaps)
 		m.Reset()
 		m.proc = s.proc
+		// Session.Cancel stops every following scan of every type
+		m.ctx, m.cancel = s.ctx, s.cancel
 
 		typ := t.value.Type()
 		switch {
@@ -349,6 +377,7 @@ func (s *Session) FirstScan(values []*scanner.Value, emulatorMode bool) (time.Du
 		t.hits = nil
 		s.scans[typ] = m
 	}
+	s.round = 1
 
 	return time.Since(st), nil
 }

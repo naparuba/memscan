@@ -2,6 +2,7 @@ package memscan
 
 import (
 	"errors"
+	"math/rand"
 	"os"
 	"reflect"
 	"testing"
@@ -49,6 +50,13 @@ func slots(count, slotIndex int) (offsets []int) {
 	}
 	return
 }
+
+// Tests that count results use values that are different on every run: copies
+// of a constant needle pile up in the heap of the test process (garbage of the
+// previous tests or iterations) and would be counted as results too.
+func randomInt32() int32 { return int32(rand.Uint32() | 0x01010101) }
+
+func randomInt64() int64 { return int64(rand.Uint64() | 0x0101010101010101) }
 
 // within keeps the addresses that belong to the area.
 func (a *plantedArea) within(addrs []uint64) (kept []uint64) {
@@ -159,20 +167,17 @@ func TestSessionMatchesSingleTypeEngine(t *testing.T) {
 	truncated := scanner.NewFloat64(7)
 	truncated.WithOption(scanner.OptionFloatTruncated)
 
-	values := []*scanner.Value{
-		scanner.NewInt8(0x21),
-		scanner.NewInt32(0x01010101),
-		scanner.NewInt64(0x0101010101010101),
-		rounded,
-		truncated,
-	}
+	// no Int8 here: a one-byte needle can match so many bytes of a region that
+	// the single-type engine overflows its per-region buffer (it does not check
+	// it); Int8 is covered by TestSessionFirstScanFindsPlantedValues
+	i32, i64 := scanner.NewInt32(randomInt32()), scanner.NewInt64(randomInt64())
+	values := []*scanner.Value{i32, i64, rounded, truncated}
 	// values around the targets: inside and outside the rounded/truncated ranges
 	for k := 0; k < pages; k++ {
 		area.plant(scanner.NewFloat32(float32(2.4+0.2*float64(k%9))), k*4096+0)
 		area.plant(scanner.NewFloat64(6.5+0.25*float64(k%7)), k*4096+8)
-		area.plant(scanner.NewInt32(0x01010101), k*4096+16)
-		area.plant(scanner.NewInt64(0x0101010101010101), k*4096+24+8*(k%3))
-		area.plant(scanner.NewInt8(0x21), k*4096+40+k%13)
+		area.plant(i32, k*4096+16)
+		area.plant(i64, k*4096+24+8*(k%3))
 	}
 
 	proc := selfProcess(t)
@@ -205,8 +210,8 @@ func TestSessionMatchesSingleTypeEngine(t *testing.T) {
 func TestSessionLimits(t *testing.T) {
 	t.Run("soft limit parks a type, hard limit drops it", func(t *testing.T) {
 		area := newPlantedArea(t, 400*4096)
-		ok := scanner.NewInt32(0x6F1E9A3C)
-		parked := scanner.NewInt64(0x1D2C3B4A5F607182)
+		ok := scanner.NewInt32(randomInt32())
+		parked := scanner.NewInt64(randomInt64())
 		flood := scanner.NewInt8(0x5A)
 
 		okAddrs := area.plant(ok, slots(30, 0)...)
@@ -249,8 +254,8 @@ func TestSessionLimits(t *testing.T) {
 
 	t.Run("global limit drops the biggest type", func(t *testing.T) {
 		area := newPlantedArea(t, 400*4096)
-		a := scanner.NewInt32(0x6F1E9A3C)
-		b := scanner.NewInt64(0x1D2C3B4A5F607182)
+		a := scanner.NewInt32(randomInt32())
+		b := scanner.NewInt64(randomInt64())
 		area.plant(a, slots(300, 0)...)
 		bAddrs := area.plant(b, slots(200, 1)...)
 
