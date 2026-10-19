@@ -31,6 +31,14 @@ func FreeString(p *C.char) {
 	C.free(unsafe.Pointer(p))
 }
 
+// DebugDumpStacks returns the stack of every goroutine of the engine (free it
+// with FreeString). It takes no lock, so it works while a scan never ends.
+//
+//export DebugDumpStacks
+func DebugDumpStacks() *C.char {
+	return C.CString(dumpStacks())
+}
+
 //export SetRenderResultsThreshold
 func SetRenderResultsThreshold(value C.int) {
 	app.mu.Lock()
