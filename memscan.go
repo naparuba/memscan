@@ -183,6 +183,7 @@ func (m *Memscan) RenderResults(valueType *scanner.Value) (rows [][2]string) {
 	m.readValuesRaw(m.results.Data(), valueSize, valueType.DisturbingByte(), buf)
 	value := &scanner.Value{}
 	value.SetType(valueType.Type())
+	value.SetUnsigned(valueType.Unsigned())
 
 	rows = make([][2]string, 0, count)
 	for i := 0; i < count; i++ {

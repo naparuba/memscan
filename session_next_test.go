@@ -3,8 +3,10 @@ package memscan
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/kayon/memscan/scanner"
@@ -308,6 +310,32 @@ func TestSessionRenderRefusesLongLists(t *testing.T) {
 	if _, err := s.Render(scanner.Int32, x); !errors.Is(err, ErrTooManyResults) {
 		t.Fatalf("render of %d results: %v", s.Scan(scanner.Int32).Count(), err)
 	}
+}
+
+// a positive number typed by the user is displayed as typed, even when its
+// highest bit is set (3000000000 is not -1294967296)
+func TestSessionRenderUsesUnsignedDisplay(t *testing.T) {
+	area := newPlantedArea(t, 10*4096)
+	typed := strconv.FormatUint(uint64(rand.Uint32()|0x80000000), 10)
+	x := scanner.ParseAs(typed, scanner.Int32, scanner.OptionFloatUnrounded, false)
+	if x == nil {
+		t.Fatalf("%s does not fit an Int32", typed)
+	}
+	addrs := area.plant(x, slots(5, 0)...)
+
+	s, _ := newSelfSession(t)
+	mustFirstScan(t, s, x)
+	rows, err := s.Render(scanner.Int32, x)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [2]string{fmt.Sprintf("%08X", addrs[2]), typed}
+	for _, row := range rows {
+		if row == want {
+			return
+		}
+	}
+	t.Fatalf("row %v not rendered (%d rows)", want, len(rows))
 }
 
 func TestSessionNextScanAfterCancel(t *testing.T) {
