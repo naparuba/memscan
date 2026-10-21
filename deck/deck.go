@@ -106,14 +106,30 @@ func EnumGameProcesses(args ...int64) []*Process {
 	if err != nil {
 		return nil
 	}
-	slices.SortFunc(processes, func(a, b *Process) int {
-		return a.PID - b.PID
-	})
 
 	var appID int64
 	if len(args) > 0 && args[0] > 0 {
 		appID = args[0]
 	}
+
+	return gameProcessesOf(processes, appID, isGameProcess)
+}
+
+// isGameProcess: a process that can be the game, not a zombie left by a game that ended nor
+// one of the helpers of the launch.
+func isGameProcess(proc *Process) bool {
+	return proc.State != 'Z' && proc.GetIdentityScore() > 0
+}
+
+// gameProcessesOf finds the processes of the game among all the processes, with the launch
+// "reaper" of Steam as the starting point. Steam can leave several of them for the same game
+// (the game was started again, and the reaper of the first launch is still there, with a
+// zombie below), so the newest one is looked at first, and the first that leads to a process
+// that usable accepts is the one.
+func gameProcessesOf(processes []*Process, appID int64, usable func(*Process) bool) []*Process {
+	slices.SortFunc(processes, func(a, b *Process) int {
+		return a.PID - b.PID
+	})
 
 	pattern := `SteamLaunch AppId=`
 	if appID > 0 {
@@ -125,26 +141,26 @@ func EnumGameProcesses(args ...int64) []*Process {
 	// embed the same "SteamLaunch AppId=..." string in their command line and
 	// would otherwise be matched first (they have lower PIDs) and have no
 	// children, making game detection fail on newer Steam runtimes.
-	reaperIndex := slices.IndexFunc(processes, func(proc *Process) bool {
-		return proc.Comm == "reaper" && strings.Contains(proc.Command, pattern)
-	})
-
-	if reaperIndex == -1 {
-		return nil
-	}
-	reaperPID := processes[reaperIndex].PID
-	processes = findSteamLaunchGameProcesses(processes[reaperIndex:], reaperPID)
-	processes = slices.DeleteFunc(processes, func(proc *Process) bool {
-		return proc.GetIdentityScore() <= 0
-	})
-
-	if appID > 0 {
-		for i := range processes {
-			processes[i].AppID = appID
+	for i := len(processes) - 1; i >= 0; i-- {
+		reaper := processes[i]
+		if reaper.Comm != "reaper" || !strings.Contains(reaper.Command, pattern) {
+			continue
 		}
+		found := findSteamLaunchGameProcesses(processes[i:], reaper.PID)
+		found = slices.DeleteFunc(found, func(proc *Process) bool {
+			return !usable(proc)
+		})
+		if len(found) == 0 {
+			continue
+		}
+		if appID > 0 {
+			for _, proc := range found {
+				proc.AppID = appID
+			}
+		}
+		return found
 	}
-
-	return processes
+	return nil
 }
 
 // LegacyEnumGameProcesses

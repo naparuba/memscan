@@ -3,6 +3,7 @@ package main
 import (
 	"reflect"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/kayon/memscan/scanner"
@@ -25,6 +26,20 @@ func slotPositions(t *testing.T, a *App, slotIndex int, typ scanner.Type, addrs 
 		t.Fatalf("slot %d: only %d of %d planted %v are in the results", slotIndex, len(indexes), len(addrs), typ)
 	}
 	return
+}
+
+// plantedRows: the rows of the listed types that are in the area, by type name.
+func plantedRows(results *MultiResults, mem *area) map[string][][2]string {
+	rows := make(map[string][][2]string)
+	for _, tr := range results.Types {
+		for _, row := range tr.List {
+			addr, err := strconv.ParseUint(row[0], 16, 64)
+			if err == nil && addr >= mem.start && addr < mem.start+uint64(len(mem.mem)) {
+				rows[tr.Name] = append(rows[tr.Name], row)
+			}
+		}
+	}
+	return rows
 }
 
 func TestSlotsSearchSideBySide(t *testing.T) {
@@ -88,8 +103,13 @@ func TestSlotScanDoesNotTouchTheOthers(t *testing.T) {
 		t.Fatalf("slot 1 is at round %d after a scan of slot 0", rounds)
 	}
 	after := a.RefreshValuesMulti(1)
-	if after == nil || after.CanUndo || !reflect.DeepEqual(after.Types, before.Types) {
+	if after == nil || after.CanUndo || after.Round != before.Round {
 		t.Fatalf("slot 1 changed:\n before %+v\n after  %+v", before, after)
+	}
+	// what the test planted is the same; the rest of the process (heap copies of the number)
+	// can move on its own, so it is not compared
+	if got, want := plantedRows(after, areaB), plantedRows(before, areaB); !reflect.DeepEqual(got, want) {
+		t.Fatalf("slot 1 changed:\n before %v\n after  %v", want, got)
 	}
 
 	// undo of slot 0 does not undo slot 1, which has nothing to undo
