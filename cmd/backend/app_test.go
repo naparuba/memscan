@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/kayon/memscan"
 	"github.com/kayon/memscan/deck"
 	"github.com/kayon/memscan/scanner"
 )
@@ -70,14 +69,14 @@ func newTestApp(t *testing.T) *App {
 		t.Skipf("cannot inspect our own process: %v", err)
 	}
 	proc.AppID = testAppID
-	a := &App{
-		session:                memscan.NewSession(),
-		game:                   proc,
-		renderResultsThreshold: MaxResultsThreshold,
+	a := newApp()
+	a.game = proc
+	a.renderResultsThreshold = MaxResultsThreshold
+	for _, s := range a.scans {
+		// pausing ourselves would freeze the test
+		s.session.SetPauseFuncs(func() error { return nil }, func() error { return nil })
+		t.Cleanup(func() { _ = s.session.Close() })
 	}
-	// pausing ourselves would freeze the test
-	a.session.SetPauseFuncs(func() error { return nil }, func() error { return nil })
-	t.Cleanup(func() { _ = a.session.Close() })
 	return a
 }
 
@@ -147,7 +146,7 @@ func TestFirstScanMultiSearchesEveryType(t *testing.T) {
 	number := randomNumber()
 	planted := plantEverywhere(t, mem, number, 10)
 
-	results := a.FirstScanMulti(testAppID, number, scanner.OptionFloatUnrounded, false, 0)
+	results := a.FirstScanMulti(0, testAppID, number, scanner.OptionFloatUnrounded, false, 0)
 	if results == nil {
 		t.Fatal("nil result")
 	}
@@ -169,7 +168,7 @@ func TestFirstScanMultiSearchesEveryType(t *testing.T) {
 		if tr.Count < len(want[typ]) {
 			t.Fatalf("%v: %d results for %d planted values", typ, tr.Count, len(want[typ]))
 		}
-		found := mem.within(a.session.Scan(typ).Results())
+		found := mem.within(a.scans[0].session.Scan(typ).Results())
 		if !reflect.DeepEqual(found, want[typ]) {
 			t.Fatalf("%v: %d hits in the area, want %d", typ, len(found), len(want[typ]))
 		}
@@ -188,14 +187,14 @@ func TestFirstScanMultiTypesMask(t *testing.T) {
 	plantEverywhere(t, mem, number, 10)
 
 	mask := typesBit(scanner.Int64) | typesBit(scanner.Float32) | typesBit(scanner.Int8) // Int8 cannot hold it
-	results := a.FirstScanMulti(testAppID, number, scanner.OptionFloatUnrounded, false, mask)
+	results := a.FirstScanMulti(0, testAppID, number, scanner.OptionFloatUnrounded, false, mask)
 	if results == nil {
 		t.Fatal("nil result")
 	}
 	if want := []string{"Int64", "Float32"}; !reflect.DeepEqual(names(results), want) {
 		t.Fatalf("types %v, want %v", names(results), want)
 	}
-	if a.FirstScanMulti(testAppID, number, scanner.OptionFloatUnrounded, false, typesBit(scanner.Int8)) != nil {
+	if a.FirstScanMulti(0, testAppID, number, scanner.OptionFloatUnrounded, false, typesBit(scanner.Int8)) != nil {
 		t.Fatal("a mask without any type that fits must give nothing")
 	}
 }
@@ -206,13 +205,13 @@ func TestMultiScansNarrowDownThenUndo(t *testing.T) {
 	first, second := randomNumber(), randomNumber()
 	plantEverywhere(t, mem, first, 10)
 
-	if a.FirstScanMulti(testAppID, first, scanner.OptionFloatUnrounded, false, 0) == nil {
+	if a.FirstScanMulti(0, testAppID, first, scanner.OptionFloatUnrounded, false, 0) == nil {
 		t.Fatal("first scan failed")
 	}
 
 	// the number changes everywhere
 	planted2 := plantEverywhere(t, mem, second, 10)
-	results := a.NextScanMulti(second)
+	results := a.NextScanMulti(0, second)
 	if results == nil {
 		t.Fatal("next scan failed")
 	}
@@ -225,13 +224,13 @@ func TestMultiScansNarrowDownThenUndo(t *testing.T) {
 		if got[typ.String()].Status != "ok" {
 			t.Fatalf("%v: %+v", typ, got[typ.String()])
 		}
-		if found := mem.within(a.session.Scan(typ).Results()); !reflect.DeepEqual(found, want[typ]) {
+		if found := mem.within(a.scans[0].session.Scan(typ).Results()); !reflect.DeepEqual(found, want[typ]) {
 			t.Fatalf("%v: %d hits kept, want %d", typ, len(found), len(want[typ]))
 		}
 	}
 
 	// a decimal number fits the floats only, and nothing holds it
-	results = a.NextScanMulti("1.5")
+	results = a.NextScanMulti(0, "1.5")
 	if results == nil {
 		t.Fatal("next scan with a decimal failed")
 	}
@@ -243,13 +242,13 @@ func TestMultiScansNarrowDownThenUndo(t *testing.T) {
 	}
 
 	// something that is not a number changes nothing
-	before := a.session.Rounds()
-	if r := a.NextScanMulti("abc"); r == nil || r.Round != before {
+	before := a.scans[0].session.Rounds()
+	if r := a.NextScanMulti(0, "abc"); r == nil || r.Round != before {
 		t.Fatalf("a text that is not a number must not start a scan: %+v", r)
 	}
 
 	// undo brings the dropped and emptied types back
-	results = a.UndoScanMulti()
+	results = a.UndoScanMulti(0)
 	if results == nil {
 		t.Fatal("nothing to undo")
 	}
@@ -269,12 +268,12 @@ func TestKeepOnlyMulti(t *testing.T) {
 	number := randomNumber()
 	plantEverywhere(t, mem, number, 10)
 
-	if a.KeepOnlyMulti(typesBit(scanner.Int32)) != nil {
+	if a.KeepOnlyMulti(0, typesBit(scanner.Int32)) != nil {
 		t.Fatal("KeepOnlyMulti before any scan must give nothing")
 	}
-	a.FirstScanMulti(testAppID, number, scanner.OptionFloatUnrounded, false, 0) // Int32 Int64 Float32 Float64
+	a.FirstScanMulti(0, testAppID, number, scanner.OptionFloatUnrounded, false, 0) // Int32 Int64 Float32 Float64
 
-	results := a.KeepOnlyMulti(typesBit(scanner.Float32) | typesBit(scanner.Int32) | typesBit(scanner.Int8))
+	results := a.KeepOnlyMulti(0, typesBit(scanner.Float32) | typesBit(scanner.Int32) | typesBit(scanner.Int8))
 	if results == nil {
 		t.Fatal("KeepOnlyMulti failed")
 	}
@@ -292,11 +291,11 @@ func TestKeepOnlyMulti(t *testing.T) {
 	}
 
 	// none of the requested types has results: nothing changes
-	if a.KeepOnlyMulti(typesBit(scanner.Int8)|typesBit(scanner.Int64)) != nil {
+	if a.KeepOnlyMulti(0, typesBit(scanner.Int8)|typesBit(scanner.Int64)) != nil {
 		t.Error("keeping only dropped or absent types must give nothing")
 	}
 
-	results = a.UndoScanMulti()
+	results = a.UndoScanMulti(0)
 	if results == nil {
 		t.Fatal("nothing to undo")
 	}
@@ -312,7 +311,7 @@ func TestChangeValuesMultiWritesOneType(t *testing.T) {
 	mem := newArea(t, 40*4096)
 	number := randomNumber()
 	planted := plantEverywhere(t, mem, number, 10)
-	a.FirstScanMulti(testAppID, number, scanner.OptionFloatUnrounded, false, 0)
+	a.FirstScanMulti(0, testAppID, number, scanner.OptionFloatUnrounded, false, 0)
 
 	readInt32 := func(addr uint64) int32 {
 		b := mem.mem[addr-mem.start:]
@@ -320,7 +319,7 @@ func TestChangeValuesMultiWritesOneType(t *testing.T) {
 	}
 
 	idx := positions(t, a, scanner.Int32, planted[scanner.Int32])
-	if r := a.ChangeValuesMulti(scanner.Int32, "-77", idx); r == nil {
+	if r := a.ChangeValuesMulti(0, scanner.Int32, "-77", idx); r == nil {
 		t.Fatal("change refused")
 	}
 	for _, addr := range planted[scanner.Int32] {
@@ -337,7 +336,7 @@ func TestChangeValuesMultiWritesOneType(t *testing.T) {
 		}
 	}
 	// a value the type cannot hold writes nothing
-	if a.ChangeValuesMulti(scanner.Int32, "1.5", idx) != nil {
+	if a.ChangeValuesMulti(0, scanner.Int32, "1.5", idx) != nil {
 		t.Fatal("1.5 does not fit an Int32")
 	}
 }
@@ -345,7 +344,7 @@ func TestChangeValuesMultiWritesOneType(t *testing.T) {
 // positions: positions of the addresses in the result list of a type.
 func positions(t *testing.T, a *App, typ scanner.Type, addrs []uint64) (indexes []int) {
 	t.Helper()
-	results := a.session.Scan(typ).Results()
+	results := a.scans[0].session.Scan(typ).Results()
 	for _, addr := range addrs {
 		i := sort.Search(len(results), func(i int) bool { return results[i] >= addr })
 		if i < len(results) && results[i] == addr {
@@ -361,14 +360,14 @@ func positions(t *testing.T, a *App, typ scanner.Type, addrs []uint64) (indexes 
 func TestRequestsThatMustGiveNothing(t *testing.T) {
 	a := newTestApp(t)
 	for _, input := range []string{"", "abc", "0", "0.0", "0x10", "NaN"} {
-		if r := a.FirstScanMulti(testAppID, input, scanner.OptionFloatUnrounded, false, 0); r != nil {
+		if r := a.FirstScanMulti(0, testAppID, input, scanner.OptionFloatUnrounded, false, 0); r != nil {
 			t.Errorf("first scan of %q gave %+v", input, r)
 		}
 	}
-	if a.NextScanMulti("1") != nil || a.UndoScanMulti() != nil || a.RefreshValuesMulti() != nil {
+	if a.NextScanMulti(0, "1") != nil || a.UndoScanMulti(0) != nil || a.RefreshValuesMulti(0) != nil {
 		t.Error("scans before any first scan must give nothing")
 	}
-	if a.ChangeValuesMulti(scanner.Int32, "1", nil) != nil {
+	if a.ChangeValuesMulti(0, scanner.Int32, "1", nil) != nil {
 		t.Error("change before any first scan must give nothing")
 	}
 }
@@ -390,7 +389,7 @@ func TestSingleTypeAPI(t *testing.T) {
 	if !hasRow(results.List, planted[scanner.Int32][2], number) {
 		t.Fatalf("list lacks the planted value: %v", results.List)
 	}
-	if got := a.session.Infos(); len(got) != 1 || got[0].Type != scanner.Int32 {
+	if got := a.scans[0].session.Infos(); len(got) != 1 || got[0].Type != scanner.Int32 {
 		t.Fatalf("a single-type search must search one type: %+v", got)
 	}
 
@@ -424,7 +423,7 @@ func TestResultsJSONContract(t *testing.T) {
 	mem := newArea(t, 40*4096)
 	number := randomNumber()
 	plantEverywhere(t, mem, number, 10)
-	results := a.FirstScanMulti(testAppID, number, scanner.OptionFloatUnrounded, false, 0)
+	results := a.FirstScanMulti(0, testAppID, number, scanner.OptionFloatUnrounded, false, 0)
 
 	data, err := json.Marshal(results)
 	if err != nil {

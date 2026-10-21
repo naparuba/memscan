@@ -65,6 +65,15 @@ func ResetScan() {
 	app.ResetScan()
 }
 
+// ResetSlot forgets the search of one slot; the others stay as they are.
+//
+//export ResetSlot
+func ResetSlot(slot C.int) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.ResetSlot(int(slot))
+}
+
 //export GetGameProcesses
 func GetGameProcesses(appID C.int64_t) *C.char {
 	app.mu.Lock()
@@ -92,32 +101,34 @@ func AutoSelectGameProcess(appID C.int64_t) *C.char {
 // ---------------------------------------------------------------------------
 // Multi-type scan: every type the value can be searched in, at once.
 // The result is a MultiResults (JSON), or null when the request is invalid.
+// Every function takes the number of the slot (0 to NumSlots-1) it works on:
+// the searches of the slots are independent.
 
 // FirstScanMulti: typesMask selects the types to search, one bit per type
 // number (bit 1 = Int8 ... bit 6 = Float64); 0 means every type that can hold
 // the value.
 //
 //export FirstScanMulti
-func FirstScanMulti(appID C.int64_t, value *C.char, option C.int, emulator C.int, typesMask C.int) *C.char {
+func FirstScanMulti(slot C.int, appID C.int64_t, value *C.char, option C.int, emulator C.int, typesMask C.int) *C.char {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	results := app.FirstScanMulti(int64(appID), C.GoString(value), scanner.Option(option), emulator != 0, uint(typesMask))
+	results := app.FirstScanMulti(int(slot), int64(appID), C.GoString(value), scanner.Option(option), emulator != 0, uint(typesMask))
 	return returnJSON(results)
 }
 
 //export NextScanMulti
-func NextScanMulti(value *C.char) *C.char {
+func NextScanMulti(slot C.int, value *C.char) *C.char {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	results := app.NextScanMulti(C.GoString(value))
+	results := app.NextScanMulti(int(slot), C.GoString(value))
 	return returnJSON(results)
 }
 
 //export UndoScanMulti
-func UndoScanMulti() *C.char {
+func UndoScanMulti(slot C.int) *C.char {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	results := app.UndoScanMulti()
+	results := app.UndoScanMulti(int(slot))
 	return returnJSON(results)
 }
 
@@ -125,28 +136,28 @@ func UndoScanMulti() *C.char {
 // number); null when none of the given types has results.
 //
 //export KeepOnlyMulti
-func KeepOnlyMulti(typesMask C.int) *C.char {
+func KeepOnlyMulti(slot C.int, typesMask C.int) *C.char {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	results := app.KeepOnlyMulti(uint(typesMask))
+	results := app.KeepOnlyMulti(int(slot), uint(typesMask))
 	return returnJSON(results)
 }
 
 // ChangeValuesMulti writes value over the results of one type (a type number).
 //
 //export ChangeValuesMulti
-func ChangeValuesMulti(valueType C.int, value *C.char, cIndexes *C.int32_t, length C.int) *C.char {
+func ChangeValuesMulti(slot C.int, valueType C.int, value *C.char, cIndexes *C.int32_t, length C.int) *C.char {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	results := app.ChangeValuesMulti(scanner.Type(valueType), C.GoString(value), indexes(cIndexes, length))
+	results := app.ChangeValuesMulti(int(slot), scanner.Type(valueType), C.GoString(value), indexes(cIndexes, length))
 	return returnJSON(results)
 }
 
 //export RefreshValuesMulti
-func RefreshValuesMulti() *C.char {
+func RefreshValuesMulti(slot C.int) *C.char {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	results := app.RefreshValuesMulti()
+	results := app.RefreshValuesMulti(int(slot))
 	return returnJSON(results)
 }
 

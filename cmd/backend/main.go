@@ -15,11 +15,7 @@
 
 package main
 
-import (
-	"github.com/kayon/memscan"
-)
-
-var version = "0.4.2"
+var version = "0.5.0"
 
 const (
 	defRenderResultsThreshold = 10
@@ -28,10 +24,7 @@ const (
 var app *App
 
 func init() {
-	app = &App{
-		session:                memscan.NewSession(),
-		renderResultsThreshold: defRenderResultsThreshold,
-	}
+	app = newApp()
 }
 
 func main() {}
